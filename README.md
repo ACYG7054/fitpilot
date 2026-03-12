@@ -183,11 +183,11 @@ flowchart TD
 flowchart TD
     A[知识问题或混合问题] --> B[knowledge_reasoner]
     B --> C[生成 retrieval_query]
-    C --> D[rag_service.retrieve(query, top_k)]
-    D --> E[chroma_service.hybrid_search]
+    C --> D["rag_service.retrieve(query, top_k)"]
+    D --> E["chroma_service.hybrid_search"]
 
-    E --> F[openai_service.embed_texts(query)]
-    E --> G[_extract_keywords(query)]
+    E --> F["openai_service.embed_texts(query)"]
+    E --> G["_extract_keywords(query)"]
 
     F --> H[Chroma 向量检索]
     G --> I[Chroma 关键词检索]
@@ -196,14 +196,14 @@ flowchart TD
     I --> J
 
     J --> K[本地融合重排<br/>0.65 向量分 + 0.25 关键词分 + 0.10 排名分]
-    K --> L[截取 top_k 个 KnowledgeChunk]
+    K --> L["截取 top_k 个 KnowledgeChunk"]
     L --> M{是否命中文档}
 
     M -->|否 且未超轮次| B
     M -->|否 且已超轮次| N[human_escalation]
-    M -->|是| O[rag_service.build_context]
-    O --> P[knowledge_answer 基于证据生成答案]
-    P --> Q[reviewer 复核]
+    M -->|是| O["rag_service.build_context"]
+    O --> P["knowledge_answer<br/>基于证据生成答案"]
+    P --> Q["reviewer 复核"]
 ```
 
 ## 主要接口
