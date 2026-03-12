@@ -1,4 +1,4 @@
-"""LangGraph workflow assembly and node implementations for FitPilot."""
+"""FitPilot 的 LangGraph 工作流组装与节点实现。"""
 
 import json
 from typing import Any, Dict, List
@@ -38,12 +38,12 @@ RETRYABLE_GRAPH_EXCEPTIONS = (
 
 
 def graph_retry_predicate(exc: Exception) -> bool:
-    """Return whether a graph node failure should be retried by LangGraph."""
+    """判断图节点失败后是否应该由 LangGraph 自动重试。"""
     return isinstance(exc, RETRYABLE_GRAPH_EXCEPTIONS)
 
 
 class FitPilotGraphFactory:
-    """Build and implement the router-specialist-reviewer workflow graph."""
+    """负责构建并实现路由-专家-审核的工作流图。"""
 
     def __init__(
         self,
@@ -61,9 +61,8 @@ class FitPilotGraphFactory:
         self.human_ticket_repository = human_ticket_repository
 
     def build(self) -> Any:
-        """Assemble, connect, and compile the LangGraph state machine."""
-        # The graph uses a router -> specialist agent -> reviewer loop, then escalates to
-        # a human when retries or review rounds are exhausted.
+        """组装节点、连接边，并编译 LangGraph 状态机。"""
+        # 图流程采用 router -> specialist -> reviewer 的循环，超过限制后再升级到人工处理。
         graph = StateGraph(AgentState)
 
         graph.add_node("router", self.router_node, retry_policy=self._node_retry_policy())
@@ -83,11 +82,11 @@ class FitPilotGraphFactory:
         return graph.compile(checkpointer=InMemorySaver())
 
     def _node_retry_policy(self) -> RetryPolicy:
-        """Return the common retry policy applied to LLM- and tool-backed nodes."""
+        """返回适用于 LLM 与工具节点的统一重试策略。"""
         return RetryPolicy(max_attempts=2, retry_on=graph_retry_predicate)
 
     async def router_node(self, state: AgentState) -> Command:
-        """Classify the request and initialize routing-related state fields."""
+        """识别用户意图，并初始化与路由相关的状态字段。"""
         question = state["question"].strip()
         normalized_question = question
         await emit_graph_event("thinking", "router", {"question": question})
@@ -121,7 +120,7 @@ class FitPilotGraphFactory:
         return Command(goto="dispatch_agent", update=next_update)
 
     async def dispatch_agent_node(self, state: AgentState) -> Command:
-        """Select the next specialist agent that still needs to run."""
+        """挑选下一个尚未完成的专家代理节点。"""
         approved_agents = set(state.get("approved_agents", []))
         pending_agents = state.get("pending_agents", [])
         remaining_agents = [agent for agent in pending_agents if agent not in approved_agents]
@@ -135,7 +134,7 @@ class FitPilotGraphFactory:
         return Command(goto="gym_agent", update={"active_agent": "gym"})
 
     async def knowledge_reasoner_node(self, state: AgentState) -> Command:
-        """Run the knowledge ReAct planning step and decide whether to retrieve again."""
+        """执行知识代理的 ReAct 规划步骤，并决定是否继续检索。"""
         react_rounds = dict(state.get("react_rounds", {}))
         current_round = react_rounds.get("knowledge", 0) + 1
         react_rounds["knowledge"] = current_round
@@ -172,7 +171,7 @@ class FitPilotGraphFactory:
         )
 
         retrieval_query = plan.search_query or state.get("normalized_question") or state["question"]
-        # The ReAct loop either pulls more evidence or moves straight to answer generation.
+        # ReAct 循环要么继续补证据，要么直接进入答案生成阶段。
         if plan.need_retrieval or not state.get("knowledge_hits"):
             return Command(
                 goto="knowledge_retrieve",
@@ -184,7 +183,7 @@ class FitPilotGraphFactory:
         )
 
     async def knowledge_retrieve_node(self, state: AgentState) -> Command:
-        """Retrieve candidate knowledge chunks from the hybrid Chroma search."""
+        """从混合检索结果中召回候选知识片段。"""
         retrieval_query = state.get("retrieval_query") or state.get("normalized_question") or state["question"]
         await emit_graph_event(
             "tool_start",
@@ -199,7 +198,7 @@ class FitPilotGraphFactory:
         )
 
         if not chunks:
-            # When the private knowledge base misses, the agent gets one more chance to reformulate.
+            # 私有知识库没有命中时，再给代理一次改写检索词的机会。
             current_round = dict(state.get("react_rounds", {})).get("knowledge", 1)
             if current_round >= self.settings.react_max_rounds:
                 return self._to_human_command(
@@ -221,7 +220,7 @@ class FitPilotGraphFactory:
         )
 
     async def knowledge_answer_node(self, state: AgentState) -> Dict[str, Any]:
-        """Generate the grounded knowledge answer from retrieved context."""
+        """基于检索上下文生成有证据支撑的知识答案。"""
         chunks = [KnowledgeChunk.model_validate(item) for item in state.get("knowledge_hits", [])]
         context_text = self.rag_service.build_context(chunks)
         reviewer_feedback = state.get("reviewer_feedback", "")
@@ -247,7 +246,7 @@ class FitPilotGraphFactory:
         }
 
     async def gym_agent_node(self, state: AgentState) -> Dict[str, Any]:
-        """Use MCP tools to resolve the nearest gym and phrase the final answer."""
+        """通过 MCP 工具查询最近健身房，并组织最终回答。"""
         client_ip = state.get("client_ip", "").strip()
         if not client_ip:
             raise HumanInterventionRequiredError(
@@ -257,8 +256,7 @@ class FitPilotGraphFactory:
             )
 
         await emit_graph_event("tool_start", "gym_agent", {"tool_name": "find_nearest_gym", "client_ip": client_ip})
-        # The location agent talks to tools only through the MCP client so new plugins can
-        # be introduced without changing the agent contract.
+        # 位置代理只通过 MCP 客户端访问工具，这样未来新增插件时不必改代理契约。
         nearest_gym_package = await self.mcp_client.call_tool("find_nearest_gym", {"client_ip": client_ip})
         await emit_graph_event(
             "tool_end",
@@ -269,7 +267,7 @@ class FitPilotGraphFactory:
         user_location = UserLocationRecord.model_validate(nearest_gym_package["user_location"])
         nearest_gym = GymRecord.model_validate(nearest_gym_package["nearest_gym"])
 
-        # The navigation URL is produced as a second tool call so the map provider stays replaceable.
+        # 导航链接单独作为第二次工具调用生成，便于后续替换地图提供方。
         await emit_graph_event("tool_start", "gym_agent", {"tool_name": "build_baidu_navigation_url"})
         nav_payload = await self.mcp_client.call_tool(
             "build_baidu_navigation_url",
@@ -310,7 +308,7 @@ class FitPilotGraphFactory:
         }
 
     async def reviewer_node(self, state: AgentState) -> Command:
-        """Review the latest specialist draft and decide approve, revise, or escalate."""
+        """审核最新专家草稿，并决定通过、返修或升级人工。"""
         active_agent = state.get("active_agent", "")
         review_rounds = dict(state.get("review_rounds", {}))
         current_round = review_rounds.get(active_agent, 0) + 1
@@ -353,7 +351,7 @@ class FitPilotGraphFactory:
         )
 
         if decision.decision == "approved":
-            # Approval is tracked per agent so hybrid requests can stitch multiple specialist outputs together.
+            # 按代理记录通过状态，混合请求才能在最终阶段拼装多个专家结果。
             approved_agents = list(dict.fromkeys(state.get("approved_agents", []) + [active_agent]))
             update = {
                 "approved_agents": approved_agents,
@@ -367,7 +365,7 @@ class FitPilotGraphFactory:
             return Command(goto="finalize", update=update)
 
         if decision.decision == "revise":
-            # Reviewer feedback is written back into state so the next agent pass can react to it.
+            # 审核反馈写回状态后，下一轮代理执行才能针对性修正结果。
             if current_round >= self.settings.reviewer_max_rounds:
                 return self._to_human_command(
                     state,
@@ -391,7 +389,7 @@ class FitPilotGraphFactory:
         )
 
     async def finalize_node(self, state: AgentState) -> Dict[str, Any]:
-        """Merge approved specialist answers into the final response text."""
+        """把已通过审核的专家答案合并成最终回复。"""
         answer_parts: List[str] = []
         if state.get("knowledge_answer"):
             answer_parts.append(state["knowledge_answer"].strip())
@@ -403,7 +401,7 @@ class FitPilotGraphFactory:
         return {"final_answer": final_answer}
 
     async def human_escalation_node(self, state: AgentState) -> Dict[str, Any]:
-        """Persist an escalation ticket, pause the graph, and resume with human input."""
+        """创建人工工单、暂停图执行，并等待人工结果恢复。"""
         reason = state.get("reviewer_feedback") or state.get("last_error") or "Manual intervention required."
         payload = {
             "question": state.get("question"),
@@ -421,7 +419,7 @@ class FitPilotGraphFactory:
             payload=payload,
         )
         await emit_graph_event("interrupt", "human_escalation", {"ticket_id": ticket_id, "reason": reason})
-        # LangGraph interrupt pauses the workflow and lets the API resume it later with a human payload.
+        # LangGraph 的 interrupt 会暂停流程，后续由 API 携带人工结果继续恢复。
         resolution = interrupt(
             {
                 "ticket_id": ticket_id,
@@ -450,7 +448,7 @@ class FitPilotGraphFactory:
         }
 
     def _heuristic_route(self, question: str) -> RoutingDecision:
-        """Fallback router used when the structured LLM router is unavailable."""
+        """结构化路由模型不可用时使用的兜底路由规则。"""
         lower_question = question.lower()
         knowledge_markers = ["增肌", "减脂", "训练", "饮食", "蛋白", "深蹲", "卧推", "fitness", "muscle"]
         gym_markers = ["健身房", "附近", "导航", "路线", "怎么去", "map", "nearby gym"]
@@ -480,7 +478,7 @@ class FitPilotGraphFactory:
         )
 
     def _fallback_review(self, state: AgentState) -> ReviewDecision:
-        """Rule-based reviewer fallback used when the reviewer model is unavailable."""
+        """审核模型不可用时使用的规则型兜底审核逻辑。"""
         active_agent = state.get("active_agent")
         if active_agent == "knowledge" and state.get("knowledge_hits") and state.get("draft_answer"):
             return ReviewDecision(decision="approved", feedback="已通过规则兜底校验。", confidence=0.55)
@@ -489,7 +487,7 @@ class FitPilotGraphFactory:
         return ReviewDecision(decision="escalate", feedback="缺少足够证据，建议人工复核。", confidence=0.2)
 
     def _review_evidence(self, state: AgentState) -> str:
-        """Render the evidence block that the reviewer should inspect."""
+        """整理审核节点需要查看的证据内容。"""
         active_agent = state.get("active_agent")
         if active_agent == "knowledge":
             chunks = [KnowledgeChunk.model_validate(item) for item in state.get("knowledge_hits", [])]
@@ -503,7 +501,7 @@ class FitPilotGraphFactory:
         )
 
     def _fallback_gym_answer(self, user_location: UserLocationRecord, nearest_gym: GymRecord) -> str:
-        """Return a deterministic gym answer when the LLM is unavailable."""
+        """在 LLM 不可用时返回规则拼装的健身房答案。"""
         return (
             f"已根据您的IP定位到 {user_location.city or '当前城市'} 附近的最近健身房："
             f"{nearest_gym.name}，距离约 {nearest_gym.distance_km} 公里。"
@@ -512,7 +510,7 @@ class FitPilotGraphFactory:
         )
 
     def _to_human_command(self, state: AgentState, reason: str, update: Dict[str, Any]) -> Command:
-        """Wrap an error reason into a graph transition toward human escalation."""
+        """把错误原因封装成跳转到人工处理节点的命令。"""
         next_update = dict(update)
         next_update["last_error"] = reason
         return Command(goto="human_escalation", update=next_update)

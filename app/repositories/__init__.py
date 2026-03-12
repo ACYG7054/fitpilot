@@ -1,1 +1,1 @@
-"""Repository layer."""
+"""仓储层模块。"""

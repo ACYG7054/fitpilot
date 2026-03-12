@@ -1,1 +1,1 @@
-"""Database utilities."""
+"""数据库相关工具模块。"""

@@ -4,15 +4,15 @@ from typing import Any, Dict, Optional
 
 
 class FitPilotError(Exception):
-    """Base application error."""
+    """应用内所有自定义异常的基类。"""
 
 
 class RetryableServiceError(FitPilotError):
-    """Raised when a downstream dependency can be retried safely."""
+    """表示下游依赖异常，但当前场景允许安全重试。"""
 
 
 class HumanInterventionRequiredError(FitPilotError):
-    """Raised when automatic retries are exhausted and a human should step in."""
+    """表示自动重试已经耗尽，需要人工接手处理。"""
 
     def __init__(
         self,
@@ -27,8 +27,8 @@ class HumanInterventionRequiredError(FitPilotError):
 
 
 class McpProtocolError(FitPilotError):
-    """Raised when an MCP request or response is invalid."""
+    """表示 MCP 请求或响应不符合协议要求。"""
 
 
 class JsonOutputParseError(FitPilotError):
-    """Raised when LLM JSON output cannot be parsed."""
+    """表示 LLM 返回的 JSON 内容无法被正确解析。"""

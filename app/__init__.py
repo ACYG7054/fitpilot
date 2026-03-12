@@ -1,1 +1,1 @@
-"""FitPilot application package."""
+"""FitPilot 应用主包。"""
