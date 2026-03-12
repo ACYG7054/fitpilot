@@ -1,0 +1,1 @@
+"""FitPilot application package."""
