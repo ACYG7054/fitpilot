@@ -137,42 +137,43 @@ python main.py
 
 ### Agent 回答接口调用流程
 
-下面这张图对应 `POST /api/v1/chat` 的主链路。`POST /api/v1/chat/stream` 复用同一套 Graph，只是把 `graph.ainvoke()` 改成 `graph.astream_events()`，并通过 SSE 持续推送中间事件。
+下面这张图对应 `POST /api/v1/chat` 的主链路。`POST /api/v1/chat/stream` 复用同一套 Graph，只是把 `graph.ainvoke()` 改成 `graph.astream_events()`，并通过 SSE 持续推送中间事件。图中保留英文节点名用于和代码对照，后面的中文用于说明职责，连线上的中文表示流转动作或判断条件。
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 48, 'rankSpacing': 60}}}%%
 flowchart TD
-    A[客户端请求 POST /api/v1/chat] --> B[chat 路由]
-    B --> C[构建初始状态<br/>session_id / thread_id / request_id / client_ip / question]
-    C --> D[container.graph.ainvoke]
-    D --> E[router 节点<br/>识别 intent 和 pending_agents]
-    E --> F[dispatch_agent 节点]
+    A[客户端请求<br/>POST /api/v1/chat] -->|进入聊天接口| B[chat 路由<br/>接收请求并进入主流程]
+    B -->|组装上下文| C[构建初始状态<br/>写入 session_id / thread_id<br/>request_id / client_ip / question]
+    C -->|调用工作流| D[container.graph.ainvoke<br/>启动 LangGraph 主流程]
+    D -->|进入路由判断| E[router 节点<br/>识别 intent / pending_agents<br/>决定后续分支]
+    E -->|分发待执行 Agent| F[dispatch_agent 节点<br/>选择待执行 Agent]
 
-    F -->|knowledge| G[knowledge_reasoner]
-    G --> H[knowledge_retrieve]
-    H --> I[knowledge_answer]
+    F -->|knowledge：走知识问答分支| G[knowledge_reasoner<br/>规划知识检索策略]
+    G -->|发起 RAG 检索| H[knowledge_retrieve<br/>召回相关知识证据]
+    H -->|基于证据起草答案| I[knowledge_answer<br/>生成知识问答草稿]
 
-    F -->|gym| J[gym_agent]
-    J --> J1[MCP: find_nearest_gym]
-    J1 --> J2[MCP: build_baidu_navigation_url]
-    J2 --> J3[生成门店回答草稿]
+    F -->|gym：走门店推荐分支| J[gym_agent<br/>处理附近健身房查询]
+    J -->|调用找店工具| J1[MCP: find_nearest_gym<br/>查找最近健身房]
+    J1 -->|补充导航信息| J2[MCP: build_baidu_navigation_url<br/>生成百度导航链接]
+    J2 -->|整理门店信息| J3[生成门店回答草稿<br/>汇总门店与导航结果]
 
-    I --> K[reviewer]
-    J3 --> K
+    I -->|提交复核| K[reviewer<br/>检查答案质量和一致性]
+    J3 -->|提交复核| K
 
-    K -->|approved| L{是否还有待执行 Agent}
-    L -->|有| F
-    L -->|无| M[finalize]
+    K -->|approved：复核通过| L{是否还有待执行 Agent<br/>pending_agents 是否已清空}
+    L -->|有：继续分发| F
+    L -->|无：进入收尾| M[finalize<br/>汇总最终状态]
 
-    K -->|revise| N[回到 knowledge_reasoner 或 gym_agent]
-    N --> K
+    K -->|revise：需要修改| N[返工重试<br/>回到对应 Agent]
+    N -->|重试后再次复核| K
 
-    K -->|escalate 或超过阈值| O[human_escalation]
-    O --> P[写入 human_intervention_tickets]
-    P --> Q[LangGraph interrupt 等待人工恢复]
+    K -->|escalate 或超过阈值：升级人工| O[human_escalation<br/>触发人工介入]
+    O -->|记录人工工单| P[写入 human_intervention_tickets<br/>保存待处理任务]
+    P -->|挂起等待恢复| Q[LangGraph interrupt<br/>等待人工恢复]
 
-    M --> R[_serialize_result]
-    Q --> R
-    R --> S[返回 ChatResponse]
+    M -->|序列化结果| R[_serialize_result<br/>格式化响应体]
+    Q -->|人工恢复后继续| R
+    R -->|返回接口结果| S[返回 ChatResponse<br/>结束本次请求]
 ```
 
 ### RAG 检索流程
@@ -180,30 +181,31 @@ flowchart TD
 下面这张图对应 `knowledge` Agent 的检索链路；`POST /api/v1/knowledge/search` 也会复用其中的 `rag_service.retrieve()` 与 `chroma_service.hybrid_search()`，只是不会进入答案生成和 reviewer 阶段。
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 48, 'rankSpacing': 60}}}%%
 flowchart TD
-    A[知识问题或混合问题] --> B[knowledge_reasoner]
-    B --> C[生成 retrieval_query]
-    C --> D["rag_service.retrieve(query, top_k)"]
-    D --> E["chroma_service.hybrid_search"]
+    A[知识问题或混合问题<br/>进入知识检索链路] -->|交给知识 Agent| B[knowledge_reasoner<br/>分析问题并规划检索]
+    B -->|生成检索词| C[生成 retrieval_query<br/>提炼检索语句]
+    C -->|调用 RAG 检索服务| D["rag_service.retrieve(query, top_k)<br/>统一检索入口"]
+    D -->|进入混合检索| E["chroma_service.hybrid_search<br/>并行做向量和关键词检索"]
 
-    E --> F["openai_service.embed_texts(query)"]
-    E --> G["_extract_keywords(query)"]
+    E -->|向量化查询| F["openai_service.embed_texts(query)<br/>把查询转成向量"]
+    E -->|提取关键词| G["_extract_keywords(query)<br/>抽取关键词"]
 
-    F --> H[Chroma 向量检索]
-    G --> I[Chroma 关键词检索]
+    F -->|按语义相似度召回| H[Chroma 向量检索<br/>按语义相似度召回]
+    G -->|按词项匹配召回| I[Chroma 关键词检索<br/>按词项匹配召回]
 
-    H --> J[合并候选集]
-    I --> J
+    H -->|汇入候选集| J[合并候选集<br/>整合两路召回结果]
+    I -->|汇入候选集| J
 
-    J --> K[本地融合重排<br/>0.65 向量分 + 0.25 关键词分 + 0.10 排名分]
-    K --> L["截取 top_k 个 KnowledgeChunk"]
-    L --> M{是否命中文档}
+    J -->|融合排序| K[本地融合重排<br/>0.65 向量 + 0.25 关键词<br/>+ 0.10 排名]
+    K -->|截取前 N 条| L["截取 top_k 个 KnowledgeChunk<br/>保留最高分证据片段"]
+    L -->|判断是否命中| M{是否命中文档<br/>是否拿到可用证据}
 
-    M -->|否 且未超轮次| B
-    M -->|否 且已超轮次| N[human_escalation]
-    M -->|是| O["rag_service.build_context"]
-    O --> P["knowledge_answer<br/>基于证据生成答案"]
-    P --> Q["reviewer 复核"]
+    M -->|否，且未超轮次：改写后重试| B
+    M -->|否，且已超轮次：升级人工| N[human_escalation<br/>转人工处理]
+    M -->|是：构造答案上下文| O["rag_service.build_context<br/>拼接证据上下文"]
+    O -->|生成答案草稿| P["knowledge_answer<br/>基于证据生成答案"]
+    P -->|提交复核| Q["reviewer 复核<br/>检查答案与证据是否一致"]
 ```
 
 ## 主要接口
